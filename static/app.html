@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GROK IMAGINE // 图片生成工坊</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+
+<body>
+
+    <header>
+        <div class="marquee-container">
+            <div class="marquee-content">
+                GROK IMAGINE /// 图片生成 /// 视频合成 /// 令牌管理系统 /// 仅限授权访问 ///
+                GROK IMAGINE /// 图片生成 /// 视频合成 /// 令牌管理系统 /// 仅限授权访问 ///
+            </div>
+        </div>
+        <div class="header-row">
+            <h1>GROK IMAGINE <span style="font-size:0.5em; vertical-align:middle; color:var(--color-accent);">v2.0</span></h1>
+            <button id="btn-logout" class="btn btn-logout" title="退出登录">退出</button>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Navigation -->
+        <nav class="tabs">
+            <button class="tab-btn active" data-tab="tokens">令牌管理</button>
+            <button class="tab-btn" data-tab="imagine">图片生成</button>
+            <button class="tab-btn" data-tab="video">视频合成</button>
+        </nav>
+
+        <!-- Token Panel -->
+        <section id="panel-tokens" class="panel active">
+            <div class="section">
+                <h2>系统状态</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-total">0</div>
+                        <div class="stat-label">令牌总数</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-active">0</div>
+                        <div class="stat-label">活跃数量</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="section">
+                <h2>批量操作</h2>
+                <div class="form-group">
+                    <label>导入令牌 (SSO 或 JSON 格式)</label>
+                    <textarea id="input-tokens" placeholder="在此粘贴令牌..."></textarea>
+                </div>
+                <div style="margin-top: 15px; display:flex; gap:15px; flex-wrap:wrap;">
+                    <button id="btn-import-tokens" class="btn">导入数据</button>
+                    <button id="btn-nsfw-all" class="btn btn-secondary">批量启用 NSFW</button>
+                    <button id="btn-clear-tokens" class="btn btn-danger">清空全部</button>
+                </div>
+
+                <!-- NSFW Progress -->
+                <div id="nsfw-progress" class="progress-container">
+                    <div class="progress-fill"></div>
+                </div>
+                <div id="nsfw-log" class="log-container" style="display:none; height:100px;"></div>
+            </div>
+
+            <div class="section">
+                <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:15px; margin-bottom:20px;">
+                    <h2 style="margin-bottom:0;">令牌列表</h2>
+                    <button id="btn-export-tokens" class="btn btn-secondary">导出令牌</button>
+                </div>
+                <div id="token-list" class="token-list">
+                    <!-- Tokens Rendered Here -->
+                </div>
+                <div id="token-pagination" class="pagination" style="margin-top:20px; display:flex; justify-content:center; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <!-- Pagination Rendered Here -->
+                </div>
+            </div>
+        </section>
+
+        <!-- Image Panel -->
+        <section id="panel-imagine" class="panel">
+            <div class="section">
+                <h2>参数设置</h2>
+                <div class="form-row">
+                    <div class="form-group" style="flex:2;">
+                        <label>提示词</label>
+                        <input type="text" id="input-prompt" placeholder="描述你想要的图片..."
+                            value="">
+                    </div>
+                    <div class="form-group">
+                        <label>数量</label>
+                        <input type="number" id="input-count" value="10" min="1" max="50">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>宽高比</label>
+                        <select id="select-aspect">
+                            <option value="2:3">2:3 (竖版)</option>
+                            <option value="3:2">3:2 (横版)</option>
+                            <option value="1:1">1:1 (正方形)</option>
+                            <option value="16:9">16:9 (宽屏)</option>
+                            <option value="9:16">9:16 (手机)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>内容过滤</label>
+                        <select id="select-nsfw">
+                            <option value="true">允许 NSFW</option>
+                            <option value="false">安全模式</option>
+                        </select>
+                    </div>
+                </div>
+
+                <button id="btn-generate" class="btn" style="width:100%;">开始生成</button>
+
+                <div id="gen-progress" class="progress-container">
+                    <div class="progress-fill"></div>
+                </div>
+                <div id="gen-status-text" style="text-align:center; margin-top:10px; font-weight:bold;"></div>
+            </div>
+
+            <div class="section">
+                <h2>输出结果</h2>
+                <div id="gen-log" class="log-container" style="height:100px; margin-bottom:20px;"></div>
+
+                <div id="image-grid" class="image-grid">
+                    <!-- Images Rendered Here -->
+                </div>
+
+                <div style="text-align:center; margin-top:40px;">
+                    <button id="btn-load-more" class="btn btn-secondary" style="display:none;">加载更多</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Video Panel -->
+        <section id="panel-video" class="panel">
+            <div class="section">
+                <h2>视频合成</h2>
+                <p style="margin-bottom:20px;">请先从图片生成页面选择一张图片</p>
+
+                <!-- Hidden inputs for data transfer -->
+                <input type="hidden" id="video-url">
+                <input type="hidden" id="video-post-id">
+
+                <div id="video-preview" class="preview-card" style="display:none;">
+                    <!-- Preview Rendered Here -->
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group" style="flex:2;">
+                        <label>动作提示词</label>
+                        <textarea id="video-prompt" placeholder="描述动作效果 (如: 镜头平移、眨眼、行走)"></textarea>
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>时长</label>
+                        <select id="video-len">
+                            <option value="6">6 秒</option>
+                            <option value="10">10 秒</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>分辨率</label>
+                        <select id="video-res">
+                            <option value="480p">480p (快速)</option>
+                            <option value="720p">720p (高清)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label>模式</label>
+                        <select id="video-mode">
+                            <option value="custom">标准模式</option>
+                            <option value="extremely-crazy">疯狂模式</option>
+                        </select>
+                    </div>
+                </div>
+
+                <button id="btn-video-gen" class="btn">生成视频</button>
+
+                <div id="video-progress" class="progress-container">
+                    <div class="progress-fill"></div>
+                </div>
+
+                <div id="video-result" class="video-result"></div>
+                <div id="video-log" class="log-container" style="margin-top:20px;"></div>
+            </div>
+        </section>
+    </div>
+
+    <script type="module" src="/js/app.js"></script>
+</body>
+
+</html>

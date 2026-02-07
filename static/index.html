@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GROK IMAGINE // 登录</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <link rel="stylesheet" href="/css/login.css">
+</head>
+
+<body>
+    <div class="login-container">
+        <div class="login-box">
+            <div class="login-header">
+                <div class="glitch-text" data-text="GROK IMAGINE">GROK IMAGINE</div>
+                <p class="login-subtitle">// 系统访问验证 //</p>
+            </div>
+
+            <form id="login-form" class="login-form">
+                <div class="form-group">
+                    <label for="username">用户名</label>
+                    <input type="text" id="username" name="username" placeholder="输入用户名..." required
+                        autocomplete="username">
+                </div>
+
+                <div class="form-group">
+                    <label for="password">密码</label>
+                    <input type="password" id="password" name="password" placeholder="输入密码..." required
+                        autocomplete="current-password">
+                </div>
+
+                <button type="submit" class="btn login-btn" id="login-btn">
+                    <span class="btn-text">登录</span>
+                    <span class="btn-loading" style="display:none;">验证中...</span>
+                </button>
+
+                <div id="login-error" class="login-error" style="display:none;"></div>
+            </form>
+
+            <div class="login-footer">
+                <p>仅限授权访问</p>
+            </div>
+        </div>
+
+        <div class="bg-grid"></div>
+    </div>
+
+    <script src="/js/login.js"></script>
+</body>
+
+</html>
