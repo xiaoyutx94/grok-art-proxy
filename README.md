@@ -1,17 +1,25 @@
 # Grok Art Proxy
 
-基于 Cloudflare Workers 的 Grok AI 代理服务，提供 OpenAI 兼容的 API 接口，支持文本对话、图片生成和视频生成。
+基于 Cloudflare Workers 的 Grok AI 代理服务，提供 Web 管理界面和 OpenAI 兼容 API，支持文本对话、图片生成和视频生成。
 
 ## 功能特性
 
-- **OpenAI 兼容 API** - 支持 `/v1/chat/completions`、`/v1/images/generations`、`/v1/models` 等标准接口
+### Web 管理界面
+- **图片生成** - 可视化界面，支持多种宽高比、批量生成、NSFW 模式
+- **视频生成** - 从图片一键生成视频，支持时长和分辨率选择
+- **Token 管理** - 批量导入/导出 Grok Token，状态监控
+- **API Key 管理** - 创建多个 API Key，设置速率限制
+
+### OpenAI 兼容 API
+- **标准接口** - 支持 `/v1/chat/completions`、`/v1/images/generations`、`/v1/models`
 - **多模型支持** - Grok 3/4/4.1 系列文本模型
-- **图片生成** - 支持 5 种宽高比，NSFW 模式
-- **视频生成** - 一键从提示词生成视频，支持多种宽高比
-- **Token 池管理** - 批量导入、自动轮换、失败重试
-- **API Key 管理** - 创建多个 API Key，支持速率限制
+- **图片/视频生成** - 通过 Chat API 生成图片和视频
+- **Token 自动轮换** - 遇到速率限制自动切换账号重试
+
+### 其他特性
 - **视频海报预览** - 视频返回可点击的海报预览图
 - **认证保护** - 后台管理需用户名密码登录
+- **一键部署** - Fork 后通过 GitHub Actions 自动部署
 
 ## 支持的模型
 
@@ -51,6 +59,87 @@
 | `grok-video-3_2` | 3:2 |
 | `grok-video-16_9` | 16:9 |
 | `grok-video-9_16` | 9:16 |
+
+## 一键部署
+
+### 前置要求
+
+1. [Cloudflare 账号](https://dash.cloudflare.com/sign-up)
+2. GitHub 账号
+
+### 步骤 1: Fork 项目
+
+点击右上角 **Fork** 按钮，将项目 Fork 到你的 GitHub 账号。
+
+### 步骤 2: 获取 Cloudflare 凭证
+
+1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
+2. 获取 **Account ID** (在 Workers 页面右侧可见)
+3. 创建 **API Token**:
+   - 进入 [API Tokens](https://dash.cloudflare.com/profile/api-tokens)
+   - 点击 **Create Token**
+   - 选择 **Edit Cloudflare Workers** 模板
+   - 确保包含权限: Workers Scripts Edit, Workers KV Edit, D1 Edit
+
+### 步骤 3: 配置 GitHub Secrets
+
+进入 Fork 的仓库 → **Settings** → **Secrets and variables** → **Actions**
+
+| Secret 名称 | 说明 | 必填 |
+|-------------|------|------|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API Token | ✅ |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID | ✅ |
+| `AUTH_USERNAME` | 后台登录用户名 | ✅ |
+| `AUTH_PASSWORD` | 后台登录密码 | ✅ |
+
+### 步骤 4: 部署
+
+1. 进入 **Actions** 标签页
+2. 点击 **Deploy to Cloudflare Workers**
+3. 点击 **Run workflow**
+4. 等待部署完成
+
+### 步骤 5: 开始使用
+
+部署完成后访问 `https://grok-art-proxy.<your-subdomain>.workers.dev`
+
+## Web 端使用
+
+### 登录
+
+访问部署地址，使用配置的用户名密码登录。
+
+### 导入 Token
+
+1. 进入 **令牌管理** 页面
+2. 在文本框中粘贴 Token，支持多种格式：
+   - 纯 SSO Token（每行一个）
+   - JSON 数组格式
+   - CSV 格式: `sso,sso_rw,name`
+3. 点击 **导入数据**
+
+### 生成图片
+
+1. 进入 **图片生成** 页面
+2. 输入提示词
+3. 选择数量、宽高比
+4. 可选开启 NSFW 模式
+5. 点击 **开始生成**
+
+### 生成视频
+
+1. 先生成图片
+2. 点击图片下方的 **生成视频** 按钮
+3. 输入动作描述（可选）
+4. 选择时长和分辨率
+5. 点击 **生成视频**
+
+### 创建 API Key
+
+1. 进入 **API Key 管理** 页面
+2. 点击 **创建 API Key**
+3. 设置名称和速率限制（0 表示无限制）
+4. 复制生成的 API Key
 
 ## API 使用
 
@@ -93,52 +182,12 @@ curl https://your-worker.workers.dev/v1/chat/completions \
   }'
 ```
 
-## 一键部署
+### 获取模型列表
 
-### 前置要求
-
-1. [Cloudflare 账号](https://dash.cloudflare.com/sign-up)
-2. GitHub 账号
-
-### 步骤 1: Fork 项目
-
-点击右上角 **Fork** 按钮，将项目 Fork 到你的 GitHub 账号。
-
-### 步骤 2: 获取 Cloudflare 凭证
-
-1. 登录 [Cloudflare Dashboard](https://dash.cloudflare.com)
-2. 获取 **Account ID** (在 Workers 页面右侧可见)
-3. 创建 **API Token**:
-   - 进入 [API Tokens](https://dash.cloudflare.com/profile/api-tokens)
-   - 点击 **Create Token**
-   - 选择 **Edit Cloudflare Workers** 模板
-   - 确保包含权限: Workers Scripts Edit, Workers KV Edit, D1 Edit
-
-### 步骤 3: 配置 GitHub Secrets
-
-进入 Fork 的仓库 → **Settings** → **Secrets and variables** → **Actions**
-
-| Secret 名称 | 说明 | 必填 |
-|-------------|------|------|
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API Token | ✅ |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID | ✅ |
-| `AUTH_USERNAME` | 后台登录用户名 | ✅ |
-| `AUTH_PASSWORD` | 后台登录密码 | ✅ |
-
-### 步骤 4: 部署
-
-1. 进入 **Actions** 标签页
-2. 点击 **Deploy to Cloudflare Workers**
-3. 点击 **Run workflow**，将 `create_resources` 设为 `true`
-4. 等待部署完成
-
-### 步骤 5: 使用
-
-1. 访问 `https://grok-art-proxy.<your-account>.workers.dev`
-2. 使用配置的用户名密码登录
-3. 在 **令牌管理** 中导入 Grok Token
-4. 在 **API Key 管理** 中创建 API Key
-5. 使用 API Key 调用 API
+```bash
+curl https://your-worker.workers.dev/v1/models \
+  -H "Authorization: Bearer YOUR_API_KEY"
+```
 
 ## 环境变量
 
@@ -147,6 +196,16 @@ curl https://your-worker.workers.dev/v1/chat/completions \
 | `AUTH_USERNAME` | 后台登录用户名 | - |
 | `AUTH_PASSWORD` | 后台登录密码 | - |
 | `VIDEO_POSTER_PREVIEW` | 视频返回海报预览模式 | `true` |
+
+## 更新部署
+
+如果你之前已经部署过，更新到最新版本：
+
+1. 在 GitHub 上点击 **Sync fork** 同步最新代码
+2. 进入 **Actions** → **Deploy to Cloudflare Workers** → **Run workflow**
+3. 等待部署完成
+
+数据库迁移会自动执行，原有数据不会丢失。
 
 ## 本地开发
 
