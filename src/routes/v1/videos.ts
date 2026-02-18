@@ -1,13 +1,13 @@
 import { Hono } from "hono";
 import type { Env } from "../../env";
-import { getRandomToken, type TokenRow } from "../../repo/tokens";
+import { getRandomToken, setTokenStatus, type TokenRow } from "../../repo/tokens";
 import { generateVideo, type VideoUpdate } from "../../grok/video";
 import { incrementApiKeyUsage } from "../../repo/api-keys";
 import type { ApiAuthEnv } from "../../middleware/api-auth";
 
 const app = new Hono<ApiAuthEnv>();
 
-const MAX_RETRIES = 5;
+const MAX_RETRIES = 50;
 
 interface VideoGenerationRequest {
   model?: string;
@@ -23,6 +23,22 @@ interface OpenAIErrorResponse {
     type: string;
     code: string | null;
   };
+}
+
+function isRateLimitedError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("429") || lower.includes("rate limited") || lower.includes("rate limit");
+}
+
+function isUnauthorizedError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("401") || lower.includes("unauthorized");
+}
+
+function addExcludedToken(excludedTokenIds: string[], tokenId: string): void {
+  if (!excludedTokenIds.includes(tokenId)) {
+    excludedTokenIds.push(tokenId);
+  }
 }
 
 function createErrorResponse(message: string, status: number): Response {
@@ -134,9 +150,12 @@ app.post("/generations", async (c) => {
         if (update.type === "error") {
           const msg = update.message;
 
-          // Check for 429 rate limit
-          if (msg.includes("429") || msg.includes("Rate limited")) {
-            excludedTokenIds.push(token.id);
+          const unauthorized = isUnauthorizedError(msg);
+          if (unauthorized || isRateLimitedError(msg)) {
+            if (unauthorized) {
+              await setTokenStatus(db, token.id, "inactive");
+            }
+            addExcludedToken(excludedTokenIds, token.id);
             retryCount++;
             lastError = msg;
             break;
@@ -180,8 +199,12 @@ app.post("/generations", async (c) => {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
 
-      if (message.includes("429") || message.includes("Rate limited")) {
-        excludedTokenIds.push(token.id);
+      const unauthorized = isUnauthorizedError(message);
+      if (unauthorized || isRateLimitedError(message)) {
+        if (unauthorized) {
+          await setTokenStatus(db, token.id, "inactive");
+        }
+        addExcludedToken(excludedTokenIds, token.id);
         retryCount++;
         lastError = message;
         continue;

@@ -10,6 +10,7 @@ import {
   parseTokensText,
   deleteToken,
   clearAllTokens,
+  clearInactiveTokens,
   setTokenNsfw,
   getTokenStats,
   tokenRowToInfo,
@@ -110,6 +111,18 @@ app.delete("/api/tokens/:id", async (c) => {
 app.delete("/api/tokens", async (c) => {
   await clearAllTokens(c.env.DB);
   return c.json({ success: true, total: 0 });
+});
+
+// Clear non-active tokens
+app.delete("/api/tokens/inactive", async (c) => {
+  const deleted = await clearInactiveTokens(c.env.DB);
+  const stats = await getTokenStats(c.env.DB);
+  return c.json({
+    success: true,
+    deleted,
+    total: stats.total,
+    active: stats.active,
+  });
 });
 
 // Enable NSFW for all tokens (batch mode to avoid subrequest limits)

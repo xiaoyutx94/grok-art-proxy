@@ -1,13 +1,13 @@
 import { Hono } from "hono";
 import { streamChat } from "../../grok/chat";
-import { getRandomToken } from "../../repo/tokens";
+import { getRandomToken, setTokenStatus } from "../../repo/tokens";
 import { incrementApiKeyUsage } from "../../repo/api-keys";
 import { getModelInfo } from "../../grok/models";
 import type { ApiAuthEnv } from "../../middleware/api-auth";
 
 const app = new Hono<ApiAuthEnv>();
 
-const MAX_RETRIES = 5;
+const MAX_RETRIES = 50;
 
 interface ChatMessage {
   role: string;
@@ -42,6 +42,22 @@ function createErrorResponse(message: string, status: number): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function isRateLimitedError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("429") || lower.includes("rate limited") || lower.includes("rate limit");
+}
+
+function isUnauthorizedError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("401") || lower.includes("unauthorized");
+}
+
+function addExcludedToken(excludedTokenIds: string[], tokenId: string): void {
+  if (!excludedTokenIds.includes(tokenId)) {
+    excludedTokenIds.push(tokenId);
+  }
 }
 
 /**
@@ -154,8 +170,12 @@ app.post("/completions", async (c) => {
             )) {
               if (update.type === "error") {
                 const msg = update.message || "";
-                if (msg.includes("429") || msg.includes("rate") || msg.includes("401")) {
-                  excludedTokenIds.push(token.id);
+                const unauthorized = isUnauthorizedError(msg);
+                if (unauthorized || isRateLimitedError(msg)) {
+                  if (unauthorized) {
+                    await setTokenStatus(db, token.id, "inactive");
+                  }
+                  addExcludedToken(excludedTokenIds, token.id);
                   retryCount++;
                   break;
                 }
@@ -178,8 +198,12 @@ app.post("/completions", async (c) => {
             if (success) break;
           } catch (e) {
             const message = e instanceof Error ? e.message : String(e);
-            if (message.includes("429") || message.includes("rate")) {
-              excludedTokenIds.push(token.id);
+            const unauthorized = isUnauthorizedError(message);
+            if (unauthorized || isRateLimitedError(message)) {
+              if (unauthorized) {
+                await setTokenStatus(db, token.id, "inactive");
+              }
+              addExcludedToken(excludedTokenIds, token.id);
               retryCount++;
               continue;
             }
@@ -243,8 +267,12 @@ app.post("/completions", async (c) => {
       )) {
         if (update.type === "error") {
           const msg = update.message || "";
-          if (msg.includes("429") || msg.includes("rate") || msg.includes("401")) {
-            excludedTokenIds.push(token.id);
+          const unauthorized = isUnauthorizedError(msg);
+          if (unauthorized || isRateLimitedError(msg)) {
+            if (unauthorized) {
+              await setTokenStatus(db, token.id, "inactive");
+            }
+            addExcludedToken(excludedTokenIds, token.id);
             retryCount++;
             lastError = msg;
             break;
@@ -265,8 +293,12 @@ app.post("/completions", async (c) => {
       if (success) break;
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      if (message.includes("429") || message.includes("rate")) {
-        excludedTokenIds.push(token.id);
+      const unauthorized = isUnauthorizedError(message);
+      if (unauthorized || isRateLimitedError(message)) {
+        if (unauthorized) {
+          await setTokenStatus(db, token.id, "inactive");
+        }
+        addExcludedToken(excludedTokenIds, token.id);
         retryCount++;
         lastError = message;
         continue;

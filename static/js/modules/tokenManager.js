@@ -12,6 +12,7 @@ export async function initTokenManager() {
     document.getElementById('btn-import-tokens').onclick = importTokens;
     document.getElementById('btn-clear-tokens').onclick = clearAllTokens;
     document.getElementById('btn-nsfw-all').onclick = enableNsfwAll;
+    document.getElementById('btn-clear-inactive-tokens').onclick = clearInactiveTokens;
     document.getElementById('btn-export-tokens').onclick = exportTokens;
 
     // Listen for refresh requests
@@ -213,6 +214,17 @@ async function clearAllTokens() {
     if (!confirm('确定清空所有令牌？')) return;
     try {
         await api('/api/tokens', 'DELETE');
+        loadTokens();
+    } catch (e) {
+        alert('操作失败: ' + e.message);
+    }
+}
+
+async function clearInactiveTokens() {
+    if (!confirm('确定清除所有非活跃令牌？')) return;
+    try {
+        const res = await api('/api/tokens/inactive', 'DELETE');
+        alert(`已清除 ${res.deleted || 0} 个无效令牌`);
         loadTokens();
     } catch (e) {
         alert('操作失败: ' + e.message);

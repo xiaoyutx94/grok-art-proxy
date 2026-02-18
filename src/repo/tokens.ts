@@ -334,6 +334,26 @@ export async function clearAllTokens(db: Env["DB"]): Promise<void> {
   await dbRun(db, "DELETE FROM tokens");
 }
 
+export async function clearInactiveTokens(db: Env["DB"]): Promise<number> {
+  const row = await dbFirst<{ c: number }>(
+    db,
+    "SELECT COUNT(*) as c FROM tokens WHERE status != 'active'"
+  );
+  const count = row?.c ?? 0;
+  if (count > 0) {
+    await dbRun(db, "DELETE FROM tokens WHERE status != 'active'");
+  }
+  return count;
+}
+
+export async function setTokenStatus(
+  db: Env["DB"],
+  tokenId: string,
+  status: "active" | "inactive"
+): Promise<void> {
+  await dbRun(db, "UPDATE tokens SET status = ? WHERE id = ?", [status, tokenId]);
+}
+
 export async function setTokenNsfw(db: Env["DB"], tokenId: string, enabled: boolean): Promise<void> {
   await dbRun(db, "UPDATE tokens SET nsfw_enabled = ? WHERE id = ?", [enabled ? 1 : 0, tokenId]);
 }

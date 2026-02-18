@@ -70,7 +70,10 @@
             <div class="section">
                 <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:15px; margin-bottom:20px;">
                     <h2 style="margin-bottom:0;">令牌列表</h2>
-                    <button id="btn-export-tokens" class="btn btn-secondary">导出令牌</button>
+                    <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                        <button id="btn-clear-inactive-tokens" class="btn btn-danger">清除无效令牌</button>
+                        <button id="btn-export-tokens" class="btn btn-secondary">导出令牌</button>
+                    </div>
                 </div>
                 <div id="token-list" class="token-list">
                     <!-- Tokens Rendered Here -->

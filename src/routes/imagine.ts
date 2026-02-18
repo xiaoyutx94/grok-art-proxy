@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Env } from "../env";
-import { getToken, getRandomToken, type TokenRow } from "../repo/tokens";
+import { getToken, getRandomToken, setTokenStatus, type TokenRow } from "../repo/tokens";
 import { generateImages, type StreamUpdate } from "../grok/imagine";
 import { generateVideo, type VideoUpdate } from "../grok/video";
 
@@ -8,7 +8,23 @@ type HonoEnv = { Bindings: Env };
 
 const app = new Hono<HonoEnv>();
 
-const MAX_RETRIES = 5;
+const MAX_RETRIES = 50;
+
+function isRateLimitedError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("429") || lower.includes("rate limited") || lower.includes("rate limit");
+}
+
+function isUnauthorizedError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("401") || lower.includes("unauthorized");
+}
+
+function addExcludedToken(excludedTokenIds: string[], tokenId: string): void {
+  if (!excludedTokenIds.includes(tokenId)) {
+    excludedTokenIds.push(tokenId);
+  }
+}
 
 // Image generation (SSE stream) with auto-retry on 429
 app.post("/api/imagine/generate", async (c) => {
@@ -82,14 +98,17 @@ app.post("/api/imagine/generate", async (c) => {
           if (update.type === "error") {
             const msg = update.message;
 
-            // Check for 429 rate limit
-            if (msg.includes("429") || msg.includes("Rate limited")) {
-              excludedTokenIds.push(token.id);
+            const unauthorized = isUnauthorizedError(msg);
+            if (unauthorized || isRateLimitedError(msg)) {
+              if (unauthorized) {
+                await setTokenStatus(db, token.id, "inactive");
+              }
+              addExcludedToken(excludedTokenIds, token.id);
               retryCount++;
 
               await writeEvent("info", {
                 type: "info",
-                message: `Token rate limited, switching to another (attempt ${retryCount}/${MAX_RETRIES})`,
+                message: `Token unavailable (rate limit/unauthorized), switching (attempt ${retryCount}/${MAX_RETRIES})`,
               });
 
               // Break inner loop to retry with new token
@@ -132,13 +151,17 @@ app.post("/api/imagine/generate", async (c) => {
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
 
-        if (message.includes("429") || message.includes("Rate limited")) {
-          excludedTokenIds.push(token.id);
+        const unauthorized = isUnauthorizedError(message);
+        if (unauthorized || isRateLimitedError(message)) {
+          if (unauthorized) {
+            await setTokenStatus(db, token.id, "inactive");
+          }
+          addExcludedToken(excludedTokenIds, token.id);
           retryCount++;
 
           await writeEvent("info", {
             type: "info",
-            message: `Token rate limited, switching to another (attempt ${retryCount}/${MAX_RETRIES})`,
+            message: `Token unavailable (rate limit/unauthorized), switching (attempt ${retryCount}/${MAX_RETRIES})`,
           });
           continue;
         } else {
@@ -261,14 +284,17 @@ app.post("/api/video/generate", async (c) => {
           if (update.type === "error") {
             const msg = update.message;
 
-            // Check for 429 rate limit
-            if (msg.includes("429") || msg.includes("Rate limited")) {
-              excludedTokenIds.push(token.id);
+            const unauthorized = isUnauthorizedError(msg);
+            if (unauthorized || isRateLimitedError(msg)) {
+              if (unauthorized) {
+                await setTokenStatus(db, token.id, "inactive");
+              }
+              addExcludedToken(excludedTokenIds, token.id);
               retryCount++;
 
               await writeEvent("info", {
                 type: "info",
-                message: `Token rate limited, switching to another (attempt ${retryCount}/${MAX_RETRIES})`,
+                message: `Token unavailable (rate limit/unauthorized), switching (attempt ${retryCount}/${MAX_RETRIES})`,
               });
 
               break;
@@ -301,13 +327,17 @@ app.post("/api/video/generate", async (c) => {
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
 
-        if (message.includes("429") || message.includes("Rate limited")) {
-          excludedTokenIds.push(token.id);
+        const unauthorized = isUnauthorizedError(message);
+        if (unauthorized || isRateLimitedError(message)) {
+          if (unauthorized) {
+            await setTokenStatus(db, token.id, "inactive");
+          }
+          addExcludedToken(excludedTokenIds, token.id);
           retryCount++;
 
           await writeEvent("info", {
             type: "info",
-            message: `Token rate limited, switching to another (attempt ${retryCount}/${MAX_RETRIES})`,
+            message: `Token unavailable (rate limit/unauthorized), switching (attempt ${retryCount}/${MAX_RETRIES})`,
           });
           continue;
         } else {
@@ -398,13 +428,17 @@ app.post("/api/imagine/scroll", async (c) => {
           if (update.type === "error") {
             const msg = update.message;
 
-            if (msg.includes("429") || msg.includes("Rate limited")) {
-              excludedTokenIds.push(token.id);
+            const unauthorized = isUnauthorizedError(msg);
+            if (unauthorized || isRateLimitedError(msg)) {
+              if (unauthorized) {
+                await setTokenStatus(db, token.id, "inactive");
+              }
+              addExcludedToken(excludedTokenIds, token.id);
               retryCount++;
 
               await writeEvent("info", {
                 type: "info",
-                message: `Token rate limited, switching (attempt ${retryCount}/${MAX_RETRIES})`,
+                message: `Token unavailable (rate limit/unauthorized), switching (attempt ${retryCount}/${MAX_RETRIES})`,
               });
               break;
             } else {
@@ -423,8 +457,12 @@ app.post("/api/imagine/scroll", async (c) => {
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
 
-        if (message.includes("429") || message.includes("Rate limited")) {
-          excludedTokenIds.push(token.id);
+        const unauthorized = isUnauthorizedError(message);
+        if (unauthorized || isRateLimitedError(message)) {
+          if (unauthorized) {
+            await setTokenStatus(db, token.id, "inactive");
+          }
+          addExcludedToken(excludedTokenIds, token.id);
           retryCount++;
           continue;
         } else {
