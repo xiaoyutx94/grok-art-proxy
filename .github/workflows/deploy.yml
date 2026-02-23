@@ -95,8 +95,7 @@ jobs:
           # Validate D1 ID from secret/create output against account list when available
           if [ -n "$D1_ID" ] && [ "$D1_LIST_OK" = "true" ]; then
             if ! echo "$D1_JSON" | jq -e --arg id "$D1_ID" '.[] | select(.uuid==$id)' >/dev/null 2>&1; then
-              echo "::warning::D1 ID '$D1_ID' not found in current account list, ignoring it."
-              D1_ID=""
+              echo "::warning::D1 ID '$D1_ID' not found in current account list, will still use provided value."
             fi
           fi
 
@@ -114,8 +113,7 @@ jobs:
           # Validate KV ID from secret/create output against account list when available
           if [ -n "$KV_ID" ] && [ "$KV_LIST_OK" = "true" ]; then
             if ! echo "$KV_JSON" | jq -e --arg id "$KV_ID" '.[] | select(.id==$id)' >/dev/null 2>&1; then
-              echo "::warning::KV ID '$KV_ID' not found in current account list, ignoring it."
-              KV_ID=""
+              echo "::warning::KV ID '$KV_ID' not found in current account list, will still use provided value."
             fi
           fi
 
@@ -173,6 +171,23 @@ jobs:
           D1_ID="${{ steps.get-resources.outputs.d1_id }}"
           KV_ID="${{ steps.get-resources.outputs.kv_id }}"
 
+          if [ -z "$D1_ID" ]; then
+            D1_ID="${{ secrets.D1_DATABASE_ID }}"
+          fi
+          if [ -z "$D1_ID" ]; then
+            D1_ID="${{ steps.create-d1.outputs.d1_id }}"
+          fi
+
+          if [ -z "$KV_ID" ]; then
+            KV_ID="${{ secrets.KV_NAMESPACE_ID }}"
+          fi
+          if [ -z "$KV_ID" ]; then
+            KV_ID="${{ steps.create-kv.outputs.kv_id }}"
+          fi
+
+          D1_ID=$(echo "$D1_ID" | tr -d '[:space:]')
+          KV_ID=$(echo "$KV_ID" | tr -d '[:space:]')
+
           if [ -n "$D1_ID" ]; then
             sed -i "s/database_id = \"YOUR_D1_DATABASE_ID\"/database_id = \"$D1_ID\"/" wrangler.toml
             sed -i -E "s/^[[:space:]]*database_id = \".*\"/database_id = \"$D1_ID\"/" wrangler.toml
@@ -185,7 +200,7 @@ jobs:
             sed -i "s/id = \"YOUR_KV_NAMESPACE_ID\"/id = \"$KV_ID\"/" wrangler.toml
             sed -i -E "s/^[[:space:]]*id = \".*\"/id = \"$KV_ID\"/" wrangler.toml
           else
-            echo "::error::KV Namespace ID not found. Please set KV_NAMESPACE_ID secret."
+            echo "::error::KV Namespace ID not found. Please set KV_NAMESPACE_ID secret in this repository and ensure workflow has permission to read it."
             exit 1
           fi
 
