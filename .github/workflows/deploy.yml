@@ -72,27 +72,37 @@ jobs:
             WORKER_NAME_FROM_TOML="${{ env.WORKER_NAME }}"
           fi
 
+          D1_RAW=$(npx wrangler d1 list --json 2>/dev/null || echo "")
+          D1_JSON=$(printf '%s\n' "$D1_RAW" | sed -n '/^[[:space:]]*\[/,$p')
+          D1_LIST_OK=false
+          if echo "$D1_JSON" | jq empty >/dev/null 2>&1; then
+            D1_LIST_OK=true
+          fi
+
+          KV_RAW=$(npx wrangler kv namespace list --json 2>/dev/null || echo "")
+          KV_JSON=$(printf '%s\n' "$KV_RAW" | sed -n '/^[[:space:]]*\[/,$p')
+          KV_LIST_OK=false
+          if echo "$KV_JSON" | jq empty >/dev/null 2>&1; then
+            KV_LIST_OK=true
+          fi
+
           # Get D1 database ID
           D1_ID="${{ secrets.D1_DATABASE_ID }}"
           if [ -z "$D1_ID" ] && [ -n "${{ steps.create-d1.outputs.d1_id }}" ]; then
             D1_ID="${{ steps.create-d1.outputs.d1_id }}"
           fi
 
-          # If still empty, try to find existing database
-          if [ -z "$D1_ID" ]; then
-            D1_RAW=$(npx wrangler d1 list --json 2>/dev/null || echo "")
-            D1_JSON=$(printf '%s\n' "$D1_RAW" | sed -n '/^[[:space:]]*\[/,$p')
-            if echo "$D1_JSON" | jq empty >/dev/null 2>&1; then
-              D1_ID=$(echo "$D1_JSON" | jq -r --arg worker "${{ env.WORKER_NAME }}" --arg worker_toml "$WORKER_NAME_FROM_TOML" '.[] | select(.name==$worker or .name==$worker_toml) | .uuid' | head -n 1)
+          # Validate D1 ID from secret/create output against account list when available
+          if [ -n "$D1_ID" ] && [ "$D1_LIST_OK" = "true" ]; then
+            if ! echo "$D1_JSON" | jq -e --arg id "$D1_ID" '.[] | select(.uuid==$id)' >/dev/null 2>&1; then
+              echo "::warning::D1 ID '$D1_ID' not found in current account list, ignoring it."
+              D1_ID=""
             fi
           fi
 
-          # If still empty, fallback to current wrangler.toml value
-          if [ -z "$D1_ID" ]; then
-            D1_ID=$(grep -E '^[[:space:]]*database_id = "' wrangler.toml | head -n 1 | sed -E 's/.*database_id = "([^"]+)".*/\1/' || echo "")
-            if [ "$D1_ID" = "YOUR_D1_DATABASE_ID" ]; then
-              D1_ID=""
-            fi
+          # If still empty, try to find existing database
+          if [ -z "$D1_ID" ] && [ "$D1_LIST_OK" = "true" ]; then
+            D1_ID=$(echo "$D1_JSON" | jq -r --arg worker "${{ env.WORKER_NAME }}" --arg worker_toml "$WORKER_NAME_FROM_TOML" '.[] | select(.name==$worker or .name==$worker_toml) | .uuid' | head -n 1)
           fi
 
           # Get KV namespace ID
@@ -101,25 +111,29 @@ jobs:
             KV_ID="${{ steps.create-kv.outputs.kv_id }}"
           fi
 
-          # If still empty, try to find existing namespace
-          if [ -z "$KV_ID" ]; then
-            KV_RAW=$(npx wrangler kv namespace list --json 2>/dev/null || echo "")
-            KV_JSON=$(printf '%s\n' "$KV_RAW" | sed -n '/^[[:space:]]*\[/,$p')
-            if echo "$KV_JSON" | jq empty >/dev/null 2>&1; then
-              KV_ID=$(echo "$KV_JSON" | jq -r --arg worker "${{ env.WORKER_NAME }}" --arg worker_toml "$WORKER_NAME_FROM_TOML" '.[] | select(.title=="KV_CACHE" or .title==($worker + "-KV_CACHE") or .title==($worker + "-KV_CACHE_preview") or .title==($worker_toml + "-KV_CACHE") or .title==($worker_toml + "-KV_CACHE_preview")) | .id' | head -n 1)
-
-              if [ -z "$KV_ID" ]; then
-                KV_ID=$(echo "$KV_JSON" | jq -r '.[] | select(.title | test("KV_CACHE")) | .id' | head -n 1)
-              fi
+          # Validate KV ID from secret/create output against account list when available
+          if [ -n "$KV_ID" ] && [ "$KV_LIST_OK" = "true" ]; then
+            if ! echo "$KV_JSON" | jq -e --arg id "$KV_ID" '.[] | select(.id==$id)' >/dev/null 2>&1; then
+              echo "::warning::KV ID '$KV_ID' not found in current account list, ignoring it."
+              KV_ID=""
             fi
           fi
 
-          # If still empty, fallback to current wrangler.toml value
-          if [ -z "$KV_ID" ]; then
-            KV_ID=$(grep -E '^[[:space:]]*id = "' wrangler.toml | head -n 1 | sed -E 's/.*id = "([^"]+)".*/\1/' || echo "")
-            if [ "$KV_ID" = "YOUR_KV_NAMESPACE_ID" ]; then
-              KV_ID=""
+          # If still empty, try to find existing namespace
+          if [ -z "$KV_ID" ] && [ "$KV_LIST_OK" = "true" ]; then
+            KV_ID=$(echo "$KV_JSON" | jq -r --arg worker "${{ env.WORKER_NAME }}" --arg worker_toml "$WORKER_NAME_FROM_TOML" '.[] | select(.title=="KV_CACHE" or .title==($worker + "-KV_CACHE") or .title==($worker + "-KV_CACHE_preview") or .title==($worker_toml + "-KV_CACHE") or .title==($worker_toml + "-KV_CACHE_preview")) | .id' | head -n 1)
+
+            if [ -z "$KV_ID" ]; then
+              KV_ID=$(echo "$KV_JSON" | jq -r '.[] | select(.title | test("KV_CACHE")) | .id' | head -n 1)
             fi
+          fi
+
+          if [ -z "$D1_ID" ]; then
+            echo "::warning::Unable to resolve D1 ID from Cloudflare API. Ensure token has D1 permissions or set D1_DATABASE_ID secret."
+          fi
+
+          if [ -z "$KV_ID" ]; then
+            echo "::warning::Unable to resolve KV ID from Cloudflare API. Ensure token has KV permissions or set KV_NAMESPACE_ID secret."
           fi
 
           echo "d1_id=$D1_ID" >> $GITHUB_OUTPUT
