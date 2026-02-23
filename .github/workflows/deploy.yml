@@ -53,7 +53,7 @@ jobs:
           # Extract id from output (both create-success and already-exists messages)
           KV_ID=$(printf '%s\n' "$OUTPUT" | sed -n 's/.*id = "\([^"]*\)".*/\1/p' | head -n 1)
           if [ -z "$KV_ID" ]; then
-            KV_ID=$(printf '%s\n' "$OUTPUT" | grep -Eo '[A-Fa-f0-9]{32}' | head -n 1 || true)
+            KV_ID=$(printf '%s\n' "$OUTPUT" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([A-Fa-f0-9]\{32\}\)".*/\1/p' | head -n 1)
           fi
 
           if [ -n "$KV_ID" ]; then
@@ -73,14 +73,14 @@ jobs:
           fi
 
           D1_RAW=$(npx wrangler d1 list --json 2>/dev/null || echo "")
-          D1_JSON=$(printf '%s\n' "$D1_RAW" | sed -n '/^[[:space:]]*\[/,$p')
+          D1_JSON=$(printf '%s\n' "$D1_RAW" | sed -n '/^[[:space:]]*\[/,/\][[:space:]]*$/p')
           D1_LIST_OK=false
           if echo "$D1_JSON" | jq empty >/dev/null 2>&1; then
             D1_LIST_OK=true
           fi
 
           KV_RAW=$(npx wrangler kv namespace list --json 2>/dev/null || echo "")
-          KV_JSON=$(printf '%s\n' "$KV_RAW" | sed -n '/^[[:space:]]*\[/,$p')
+          KV_JSON=$(printf '%s\n' "$KV_RAW" | sed -n '/^[[:space:]]*\[/,/\][[:space:]]*$/p')
           KV_LIST_OK=false
           if echo "$KV_JSON" | jq empty >/dev/null 2>&1; then
             KV_LIST_OK=true
@@ -125,6 +125,30 @@ jobs:
 
             if [ -z "$KV_ID" ]; then
               KV_ID=$(echo "$KV_JSON" | jq -r '.[] | select(.title | test("KV_CACHE")) | .id' | head -n 1)
+            fi
+          fi
+
+          # If still empty, try creating namespace directly (covers parse/list failures)
+          if [ -z "$KV_ID" ]; then
+            for KV_TITLE in "KV_CACHE" "${WORKER_NAME_FROM_TOML}-KV_CACHE"; do
+              CREATE_KV_OUTPUT=$(npx wrangler kv namespace create "$KV_TITLE" 2>&1 || true)
+              TRY_KV_ID=$(printf '%s\n' "$CREATE_KV_OUTPUT" | sed -n 's/.*id = "\([^"]*\)".*/\1/p' | head -n 1)
+              if [ -z "$TRY_KV_ID" ]; then
+                TRY_KV_ID=$(printf '%s\n' "$CREATE_KV_OUTPUT" | sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([A-Fa-f0-9]\{32\}\)".*/\1/p' | head -n 1)
+              fi
+
+              if [ -n "$TRY_KV_ID" ]; then
+                KV_ID="$TRY_KV_ID"
+                echo "Resolved KV namespace via create '$KV_TITLE': $KV_ID"
+                break
+              fi
+            done
+          fi
+
+          # Validate KV ID again after create fallback
+          if [ -n "$KV_ID" ] && [ "$KV_LIST_OK" = "true" ]; then
+            if ! echo "$KV_JSON" | jq -e --arg id "$KV_ID" '.[] | select(.id==$id)' >/dev/null 2>&1; then
+              echo "::warning::Resolved KV ID '$KV_ID' not present in listed namespaces."
             fi
           fi
 
