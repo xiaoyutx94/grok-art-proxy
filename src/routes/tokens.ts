@@ -94,19 +94,6 @@ app.post("/api/tokens/add", async (c) => {
   });
 });
 
-// Delete token
-app.delete("/api/tokens/:id", async (c) => {
-  const id = c.req.param("id");
-  const deleted = await deleteToken(c.env.DB, id);
-
-  if (!deleted) {
-    return c.json({ success: false, error: "Token not found" }, 404);
-  }
-
-  const stats = await getTokenStats(c.env.DB);
-  return c.json({ success: true, total: stats.total });
-});
-
 // Clear all tokens
 app.delete("/api/tokens", async (c) => {
   await clearAllTokens(c.env.DB);
@@ -123,6 +110,19 @@ app.delete("/api/tokens/inactive", async (c) => {
     total: stats.total,
     active: stats.active,
   });
+});
+
+// Delete token
+app.delete("/api/tokens/:id", async (c) => {
+  const id = c.req.param("id");
+  const deleted = await deleteToken(c.env.DB, id);
+
+  if (!deleted) {
+    return c.json({ success: false, error: "Token not found" }, 404);
+  }
+
+  const stats = await getTokenStats(c.env.DB);
+  return c.json({ success: true, total: stats.total });
 });
 
 // Enable NSFW for all tokens (batch mode to avoid subrequest limits)
