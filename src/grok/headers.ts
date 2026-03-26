@@ -68,8 +68,12 @@ export function getWebSocketHeaders(cookie: string): Record<string, string> {
 }
 
 export function buildCookie(sso: string, sso_rw?: string, user_id?: string, cf_clearance?: string): string {
-  let cookie = `sso=${sso}`;
-  if (sso_rw) cookie += `; sso-rw=${sso_rw}`;
+  const baseSso = sso.startsWith("sso=") ? sso.slice(4) : sso.trim();
+  const baseSsoRw = sso_rw
+    ? (sso_rw.startsWith("sso-rw=") ? sso_rw.slice(7) : sso_rw.trim())
+    : baseSso;
+
+  let cookie = `sso=${baseSso}; sso-rw=${baseSsoRw || baseSso}`;
   if (user_id) cookie += `; x-userid=${user_id}`;
   if (cf_clearance) cookie += `; cf_clearance=${cf_clearance}`;
   return cookie;

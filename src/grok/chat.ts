@@ -4,10 +4,9 @@
 
 import { toGrokModel, isImageModel, isVideoModel, requiresInputImage, parseModelWithRatio } from "./models";
 import { getHeaders, buildCookie } from "./headers";
+import { buildAppChatPayload, CHAT_API, normalizeAppChatStreamLine } from "./app-chat";
 import { generateImages } from "./imagine";
 import { generateVideo } from "./video";
-
-const CHAT_API = "https://grok.com/rest/app-chat/conversations/new";
 
 /**
  * Build video poster preview HTML (clickable poster with play button overlay)
@@ -42,31 +41,6 @@ interface ChatMessage {
   content: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
 }
 
-interface GrokChatPayload {
-  temporary: boolean;
-  modelName: string;
-  modelMode: string;
-  message: string;
-  fileAttachments: string[];
-  imageAttachments: string[];
-  disableSearch: boolean;
-  enableImageGeneration: boolean;
-  returnImageBytes: boolean;
-  returnRawGrokInXaiRequest: boolean;
-  enableImageStreaming: boolean;
-  imageGenerationCount: number;
-  forceConcise: boolean;
-  toolOverrides: Record<string, unknown>;
-  enableSideBySide: boolean;
-  sendFinalMetadata: boolean;
-  isReasoning: boolean;
-  disableTextFollowUps: boolean;
-  disableMemory: boolean;
-  forceSideBySide: boolean;
-  isAsyncChat: boolean;
-  disableSelfHarmShortCircuit: boolean;
-}
-
 /**
  * Extract image URLs from text content
  */
@@ -74,15 +48,6 @@ function extractImageUrlsFromText(text: string): string[] {
   const imageUrlPattern = /https?:\/\/[^\s<>"{}|\\^`\[\]]+\.(?:jpg|jpeg|png|gif|webp)/gi;
   const matches = text.match(imageUrlPattern);
   return matches || [];
-}
-
-/**
- * Extract postId from Grok image URL
- * URL format: https://imagine-public.x.ai/imagine-public/images/{postId}.jpg
- */
-function extractPostIdFromUrl(imageUrl: string): string | null {
-  const match = imageUrl.match(/\/images\/([a-f0-9-]+)\.(jpg|jpeg|png)/i);
-  return match ? (match[1] ?? null) : null;
 }
 
 /**
@@ -128,42 +93,6 @@ function extractMessages(messages: ChatMessage[]): { text: string; imageUrls: st
   return { text: texts.join("\n\n"), imageUrls };
 }
 
-/**
- * Build Grok chat payload for text/image generation
- */
-function buildPayload(
-  message: string,
-  grokModel: string,
-  modelMode: string,
-  enableImageGeneration: boolean = false,
-  imageCount: number = 4
-): GrokChatPayload {
-  return {
-    temporary: true,
-    modelName: grokModel,
-    modelMode: modelMode,
-    message: message,
-    fileAttachments: [],
-    imageAttachments: [],
-    disableSearch: false,
-    enableImageGeneration: enableImageGeneration,
-    returnImageBytes: false,
-    returnRawGrokInXaiRequest: false,
-    enableImageStreaming: enableImageGeneration,
-    imageGenerationCount: enableImageGeneration ? imageCount : 0,
-    forceConcise: false,
-    toolOverrides: {},
-    enableSideBySide: true,
-    sendFinalMetadata: true,
-    isReasoning: false,
-    disableTextFollowUps: false,
-    disableMemory: false,
-    forceSideBySide: false,
-    isAsyncChat: false,
-    disableSelfHarmShortCircuit: false,
-  };
-}
-
 export interface ChatUpdate {
   type: "token" | "done" | "error";
   content?: string;
@@ -189,7 +118,11 @@ async function* streamTextChat(
 
   const cookie = buildCookie(sso, ssoRw);
   const headers = getHeaders(cookie);
-  const payload = buildPayload(text, modelInfo.grokModel, modelInfo.modelMode, false);
+  const payload = buildAppChatPayload({
+    message: text,
+    modelName: modelInfo.grokModel,
+    modelMode: modelInfo.modelMode,
+  });
 
   let response: Response;
   try {
@@ -231,10 +164,11 @@ async function* streamTextChat(
       buffer = lines.pop() || "";
 
       for (const line of lines) {
-        if (!line.trim()) continue;
+        const normalizedLine = normalizeAppChatStreamLine(line);
+        if (!normalizedLine) continue;
 
         try {
-          const data = JSON.parse(line);
+          const data = JSON.parse(normalizedLine);
           const resp = data?.result?.response;
           if (!resp) continue;
 
@@ -371,16 +305,6 @@ async function* streamVideoFromImage(
 ): AsyncGenerator<ChatUpdate> {
   yield { type: "token", content: "<think>\n" };
   yield { type: "token", content: `使用图片: ${imageUrl}\n` };
-
-  // Extract postId from image URL
-  const postId = extractPostIdFromUrl(imageUrl);
-  if (!postId) {
-    yield { type: "token", content: "错误: 无法从图片URL提取postId，请使用Grok生成的图片\n</think>\n" };
-    yield { type: "error", message: "Invalid image URL: must be a Grok-generated image" };
-    return;
-  }
-
-  yield { type: "token", content: `提取到 postId: ${postId}\n` };
   let lastProgress = -1;
 
   for await (const update of generateVideo(
@@ -391,7 +315,7 @@ async function* streamVideoFromImage(
     tokenId,
     imageUrl,
     prompt,
-    postId,
+    "",
     "16:9",
     5,
     "540p",
@@ -486,17 +410,9 @@ async function* streamOneClickVideo(
     return;
   }
 
-  // Extract postId from generated image URL
-  const postId = extractPostIdFromUrl(imageUrl);
-  if (!postId) {
-    yield { type: "token", content: "错误: 无法从图片URL提取postId\n</think>\n" };
-    yield { type: "error", message: "Failed to extract postId from image URL" };
-    return;
-  }
-
   // Step 2: Generate video from image
   yield { type: "token", content: "【第二步】生成视频\n" };
-  yield { type: "token", content: `使用 postId: ${postId}\n` };
+  yield { type: "token", content: `使用图片参考: ${imageUrl}\n` };
 
   let lastVideoProgress = -1;
 
@@ -508,7 +424,7 @@ async function* streamOneClickVideo(
     tokenId,
     imageUrl,
     prompt,
-    postId,
+    "",
     aspectRatio,
     5,
     "540p",

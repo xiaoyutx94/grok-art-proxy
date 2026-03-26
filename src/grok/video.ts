@@ -1,8 +1,15 @@
-import { getHeaders, buildCookie, generateStatsigId } from "./headers";
+import { getHeaders, buildCookie } from "./headers";
+import {
+  buildAppChatPayload,
+  CHAT_API,
+  normalizeAppChatStreamLine,
+  toAbsoluteGrokAssetUrl,
+} from "./app-chat";
 
-const CHAT_API = "https://grok.com/rest/app-chat/conversations/new";
-const LIKE_API = "https://grok.com/rest/media/post/like";
 const CREATE_POST_API = "https://grok.com/rest/media/post/create";
+const VIDEO_MODEL_NAME = "grok-3";
+
+type MediaPostType = "MEDIA_POST_TYPE_VIDEO" | "MEDIA_POST_TYPE_IMAGE";
 
 export interface VideoProgress {
   type: "progress";
@@ -37,92 +44,112 @@ export interface VideoDone {
 
 export type VideoUpdate = VideoProgress | VideoResult | VideoError | VideoDone;
 
-async function createMediaPost(
-  imageUrl: string,
-  cookie: string
-): Promise<string | null> {
-  const headers = getHeaders(cookie, "https://grok.com/imagine");
-
-  // Try .jpg version first if it's .png
-  const urlsToTry = [imageUrl];
-  if (imageUrl.endsWith(".png")) {
-    urlsToTry.unshift(imageUrl.slice(0, -4) + ".jpg");
-  }
-
-  for (const url of urlsToTry) {
-    try {
-      const response = await fetch(CREATE_POST_API, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ media_url: url }),
-      });
-
-      if (response.ok) {
-        const data = await response.json() as { post?: { id?: string } };
-        const postId = data.post?.id;
-        if (postId) return postId;
-      }
-    } catch {
-      // Try next URL
-    }
-  }
-
-  return null;
+function buildModeFlag(mode: string): string {
+  const modeMap: Record<string, string> = {
+    fun: "--mode=extremely-crazy",
+    normal: "--mode=normal",
+    spicy: "--mode=extremely-spicy-or-crazy",
+    auto: "--mode=custom",
+    custom: "--mode=custom",
+  };
+  return modeMap[mode] || "--mode=custom";
 }
 
-async function likePost(postId: string, cookie: string): Promise<boolean> {
-  const headers = getHeaders(cookie, `https://grok.com/imagine/post/${postId}`);
+function buildVideoMessage(prompt: string, mode: string): string {
+  const normalizedPrompt = prompt.trim() || "Generate a video from the reference image";
+  return `${normalizedPrompt} ${buildModeFlag(mode)}`.trim();
+}
 
-  try {
-    const response = await fetch(LIKE_API, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ id: postId }),
-    });
+function extractVideoIdFromUrl(videoUrl: string): string {
+  const match = videoUrl.match(/\/generated\/([0-9a-fA-F-]{32,36})\//)
+    || videoUrl.match(/\/([0-9a-fA-F-]{32,36})\/generated_video/i);
+  return match?.[1] || "";
+}
 
-    return response.ok;
-  } catch {
-    return false;
+async function createMediaPost(
+  prompt: string,
+  cookie: string,
+  mediaType: MediaPostType = "MEDIA_POST_TYPE_VIDEO",
+  mediaUrl: string = ""
+): Promise<string> {
+  const headers = getHeaders(cookie, "https://grok.com");
+  const payload: Record<string, unknown> = {
+    mediaType,
+  };
+
+  if (mediaUrl) {
+    payload.mediaUrl = mediaUrl;
   }
+  if (prompt) {
+    payload.prompt = prompt;
+  }
+
+  const response = await fetch(CREATE_POST_API, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`HTTP ${response.status}: ${text.slice(0, 200)}`);
+  }
+
+  const data = await response.json() as { post?: { id?: string } };
+  const postId = data.post?.id || "";
+  if (!postId) {
+    throw new Error("No post ID in media post response");
+  }
+  return postId;
 }
 
 function buildVideoPayload(
+  seedPostId: string,
   imageUrl: string,
   prompt: string,
-  parentPostId: string,
   aspectRatio: string,
   videoLength: number,
   resolution: string,
   mode: string
 ): Record<string, unknown> {
-  const message = `${imageUrl}  ${prompt} --mode=${mode}`;
+  const videoGenModelConfig: Record<string, unknown> = {
+    aspectRatio,
+    parentPostId: seedPostId,
+    resolutionName: resolution,
+    videoLength,
+    isVideoEdit: false,
+  };
 
-  return {
-    temporary: true,
-    modelName: "grok-3",
-    message,
+  if (imageUrl) {
+    videoGenModelConfig.imageReferences = [imageUrl];
+    videoGenModelConfig.isReferenceToVideo = true;
+  }
+
+  return buildAppChatPayload({
+    message: buildVideoMessage(prompt, mode),
+    modelName: VIDEO_MODEL_NAME,
     toolOverrides: { videoGen: true },
-    enableSideBySide: true,
-    responseMetadata: {
-      experiments: [],
-      modelConfigOverride: {
-        modelMap: {
-          videoGenModelConfig: {
-            parentPostId,
-            aspectRatio,
-            videoLength,
-            isVideoEdit: false,
-            resolutionName: resolution,
-          },
-        },
+    modelConfigOverride: {
+      modelMap: {
+        videoGenModelConfig,
       },
     },
-  };
+  });
+}
+
+function appendUniqueErrors(bucket: string[], value: unknown): void {
+  const items = Array.isArray(value) ? value : [value];
+  for (const item of items) {
+    const text = String(item || "").trim();
+    if (text && !bucket.includes(text)) {
+      bucket.push(text);
+    }
+  }
 }
 
 export async function* generateVideo(
   sso: string,
-  sso_rw: string,
+  ssoRw: string,
   user_id: string,
   cf_clearance: string,
   token_id: string,
@@ -134,28 +161,23 @@ export async function* generateVideo(
   resolution: string,
   mode: string
 ): AsyncGenerator<VideoUpdate> {
-  // Build cookie with all credentials
-  const cookie = buildCookie(sso, sso_rw, user_id, cf_clearance);
+  void parentPostId;
+  const cookie = buildCookie(sso, ssoRw, user_id, cf_clearance);
+  const effectivePrompt = prompt.trim() || "Generate a video from the reference image";
 
-  let actualPostId = parentPostId;
-
-  // Try to like the post first
-  let liked = await likePost(actualPostId, cookie);
-
-  if (!liked) {
-    // Create media post and try again
-    const createdPostId = await createMediaPost(imageUrl, cookie);
-    if (createdPostId) {
-      actualPostId = createdPostId;
-      liked = await likePost(actualPostId, cookie);
-    }
+  let seedPostId = "";
+  try {
+    seedPostId = await createMediaPost(effectivePrompt, cookie, "MEDIA_POST_TYPE_VIDEO");
+  } catch (e) {
+    yield { type: "error", message: e instanceof Error ? e.message : String(e) };
+    return;
   }
 
-  const headers = getHeaders(cookie, `https://grok.com/imagine/post/${actualPostId}`);
+  const headers = getHeaders(cookie, "https://grok.com/");
   const payload = buildVideoPayload(
+    seedPostId,
     imageUrl,
-    prompt,
-    actualPostId,
+    effectivePrompt,
     aspectRatio,
     videoLength,
     resolution,
@@ -170,7 +192,7 @@ export async function* generateVideo(
     });
 
     if (!response.ok) {
-      const text = await response.text();
+      const text = await response.text().catch(() => "");
       yield { type: "error", message: `HTTP ${response.status}: ${text.slice(0, 200)}` };
       return;
     }
@@ -183,97 +205,116 @@ export async function* generateVideo(
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    let videoId: string | null = null;
-    let videoUrl: string | null = null;
-    let thumbnailUrl: string | null = null;
+    let videoId = "";
+    let videoUrl = "";
+    let thumbnailUrl = "";
     let lastProgress = -1;
+    const streamErrors: string[] = [];
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
 
-      for (const line of lines) {
-        if (!line.trim()) continue;
+        for (const rawLine of lines) {
+          const line = normalizeAppChatStreamLine(rawLine);
+          if (!line) continue;
 
-        try {
-          const data = JSON.parse(line) as Record<string, unknown>;
-          const result = (data.result as Record<string, unknown>)?.response as Record<string, unknown> | undefined;
-          const videoResp = result?.streamingVideoGenerationResponse as Record<string, unknown> | undefined;
-
-          if (videoResp) {
-            const progress = (videoResp.progress as number) || 0;
-            videoId = (videoResp.videoPostId as string) || (videoResp.videoId as string) || videoId;
-            const url = videoResp.videoUrl as string | undefined;
-            const thumb = videoResp.thumbnailImageUrl as string | undefined;
-
-            if (url) videoUrl = url;
-            if (thumb) thumbnailUrl = thumb;
-
-            // Check moderation
-            if (videoResp.moderated) {
-              yield { type: "error", message: "Video generation blocked: content moderated" };
-              return;
-            }
-
-            // Only yield on progress change
-            if (progress !== lastProgress) {
-              lastProgress = progress;
-              yield {
-                type: "progress",
-                video_id: videoId || "",
-                progress,
-                prompt: (videoResp.videoPrompt as string) || "",
-                image_url: (videoResp.imageReference as string) || "",
-                width: (videoResp.width as number) || 0,
-                height: (videoResp.height as number) || 0,
-                resolution: (videoResp.resolutionName as string) || "",
-                moderated: false,
-              };
-            }
+          let data: unknown;
+          try {
+            data = JSON.parse(line);
+          } catch {
+            continue;
           }
-        } catch {
-          // Invalid JSON line, skip
+
+          const resp = (data as { result?: { response?: Record<string, unknown> } })?.result?.response;
+          if (!resp) continue;
+
+          appendUniqueErrors(streamErrors, resp.streamErrors);
+
+          const modelResponse = resp.modelResponse;
+          if (modelResponse && typeof modelResponse === "object") {
+            const attachments = (modelResponse as { fileAttachments?: unknown }).fileAttachments;
+            if (Array.isArray(attachments) && typeof attachments[0] === "string" && !videoId) {
+              videoId = attachments[0];
+            }
+            appendUniqueErrors(streamErrors, (modelResponse as { streamErrors?: unknown }).streamErrors);
+          }
+
+          const videoResp = resp.streamingVideoGenerationResponse;
+          if (!videoResp || typeof videoResp !== "object") continue;
+
+          const record = videoResp as Record<string, unknown>;
+          const progress = Number(record.progress ?? 0);
+          videoId = String(record.videoPostId || record.videoId || record.postId || videoId || "");
+
+          const nextVideoUrl = record.videoUrl;
+          if (typeof nextVideoUrl === "string" && nextVideoUrl.trim()) {
+            videoUrl = nextVideoUrl.trim();
+          }
+
+          const nextThumbUrl = record.thumbnailImageUrl;
+          if (typeof nextThumbUrl === "string" && nextThumbUrl.trim()) {
+            thumbnailUrl = nextThumbUrl.trim();
+          }
+
+          if (Boolean(record.moderated)) {
+            yield { type: "error", message: "Video generation blocked: content moderated" };
+            return;
+          }
+
+          if (progress !== lastProgress) {
+            lastProgress = progress;
+            yield {
+              type: "progress",
+              video_id: videoId,
+              progress,
+              prompt: String(record.videoPrompt || effectivePrompt),
+              image_url: String(record.imageReference || imageUrl || ""),
+              width: Number(record.width ?? 0),
+              height: Number(record.height ?? 0),
+              resolution: String(record.resolutionName || resolution),
+              moderated: false,
+            };
+          }
         }
       }
+    } finally {
+      reader.releaseLock();
     }
 
-    if (videoUrl && videoId) {
-      const originalUrl = videoUrl.startsWith("http")
-        ? videoUrl
-        : `https://assets.grok.com/${videoUrl.replace(/^\//, "")}`;
+    const originalUrl = toAbsoluteGrokAssetUrl(videoUrl);
+    const resolvedVideoId = videoId || extractVideoIdFromUrl(originalUrl);
 
-      // Return proxy URL for frontend to use
-      const proxyUrl = `/api/proxy/video?url=${encodeURIComponent(originalUrl)}&token=${encodeURIComponent(token_id)}`;
-
-      // Build thumbnail proxy URL if available
-      let thumbnailProxyUrl = "";
-      if (thumbnailUrl) {
-        const originalThumbUrl = thumbnailUrl.startsWith("http")
-          ? thumbnailUrl
-          : `https://assets.grok.com/${thumbnailUrl.replace(/^\//, "")}`;
-        thumbnailProxyUrl = `/api/proxy/assets/${encodeURIComponent(originalThumbUrl)}?token=${encodeURIComponent(token_id)}`;
-      }
-
-      yield {
-        type: "complete",
-        video_id: videoId,
-        video_url: proxyUrl,
-        original_url: originalUrl,
-        thumbnail_url: thumbnailProxyUrl,
-        token_id: token_id,
-        message: `Video generated: ${prompt}`,
-      };
-    } else {
-      yield { type: "error", message: "Video generation incomplete: no videoUrl received" };
+    if (!originalUrl) {
+      const detail = streamErrors.length > 0
+        ? streamErrors.join("; ")
+        : "Video generation incomplete: no videoUrl received";
+      yield { type: "error", message: detail };
       return;
     }
 
-    yield { type: "done" };
+    const proxyUrl = `/api/proxy/video?url=${encodeURIComponent(originalUrl)}&token=${encodeURIComponent(token_id)}`;
+    const originalThumbUrl = toAbsoluteGrokAssetUrl(thumbnailUrl);
+    const thumbnailProxyUrl = originalThumbUrl
+      ? `/api/proxy/assets/${encodeURIComponent(originalThumbUrl)}?token=${encodeURIComponent(token_id)}`
+      : "";
 
+    yield {
+      type: "complete",
+      video_id: resolvedVideoId,
+      video_url: proxyUrl,
+      original_url: originalUrl,
+      thumbnail_url: thumbnailProxyUrl,
+      token_id,
+      message: `Video generated: ${effectivePrompt}`,
+    };
+
+    yield { type: "done" };
   } catch (e) {
     yield { type: "error", message: e instanceof Error ? e.message : String(e) };
   }

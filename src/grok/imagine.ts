@@ -1,6 +1,15 @@
-import { getWebSocketHeaders, buildCookie } from "./headers";
+import { getHeaders, getWebSocketHeaders, buildCookie } from "./headers";
+import {
+  buildAppChatPayload,
+  CHAT_API,
+  collectGeneratedImageUrls,
+  normalizeAppChatStreamLine,
+} from "./app-chat";
 
 const WS_URL = "wss://grok.com/ws/imagine/listen";
+const IMAGE_MODEL_NAME = "grok-3";
+const IMAGE_MODEL_MODE = "MODEL_MODE_FAST";
+const APP_CHAT_IMAGE_BATCH_SIZE = 2;
 
 export interface ImageResult {
   job_id: string;
@@ -61,36 +70,8 @@ export interface DoneUpdate {
 
 export type StreamUpdate = ProgressUpdate | ImageUpdate | ErrorUpdate | InfoUpdate | DoneUpdate;
 
-function buildRequest(
-  prompt: string,
-  aspectRatio: string,
-  enableNsfw: boolean,
-  isScroll: boolean
-): Record<string, unknown> {
-  return {
-    type: "conversation.item.create",
-    timestamp: Date.now(),
-    item: {
-      type: "message",
-      content: [{
-        requestId: crypto.randomUUID(),
-        text: prompt,
-        type: isScroll ? "input_scroll" : "input_text",
-        properties: {
-          section_count: 0,
-          is_kids_mode: false,
-          enable_nsfw: enableNsfw,
-          skip_upsampler: false,
-          is_initial: false,
-          aspect_ratio: aspectRatio,
-        },
-      }],
-    },
-  };
-}
-
 interface WsMessage {
-  type: string;
+  type?: string;
   job_id?: string;
   request_id?: string;
   url?: string;
@@ -107,21 +88,71 @@ interface WsMessage {
   current_status?: string;
   percentage_complete?: number;
   message?: string;
+  err_code?: string;
+  err_msg?: string;
 }
 
-async function connectAndReceive(
+function buildWebSocketRequest(
+  prompt: string,
+  aspectRatio: string,
+  enableNsfw: boolean
+): Record<string, unknown> {
+  return {
+    type: "conversation.item.create",
+    timestamp: Date.now(),
+    item: {
+      type: "message",
+      content: [{
+        requestId: crypto.randomUUID(),
+        text: prompt,
+        type: "input_text",
+        properties: {
+          section_count: 0,
+          is_kids_mode: false,
+          enable_nsfw: enableNsfw,
+          skip_upsampler: false,
+          is_initial: false,
+          aspect_ratio: aspectRatio,
+        },
+      }],
+    },
+  };
+}
+
+function extractImageIdFromUrl(url: string): string {
+  const match = url.match(/\/images\/([a-f0-9-]+)\.(?:png|jpg|jpeg)/i)
+    || url.match(/\/([a-f0-9-]{32,36})\.(?:png|jpg|jpeg|webp)/i);
+  return match?.[1] || crypto.randomUUID();
+}
+
+function extractErrorMessage(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "Unknown error";
+  const record = payload as Record<string, unknown>;
+  const message = record.message;
+  if (typeof message === "string" && message.trim()) return message;
+  const errMsg = record.err_msg;
+  if (typeof errMsg === "string" && errMsg.trim()) return errMsg;
+  const errCode = record.err_code;
+  if (typeof errCode === "string" && errCode.trim()) return errCode;
+  return "Unknown error";
+}
+
+function isAuthOrRateLimit(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes("429") || lower.includes("rate limit") || lower.includes("401") || lower.includes("unauthorized");
+}
+
+async function connectAndReceiveViaWebSocket(
   sso: string,
-  sso_rw: string,
+  ssoRw: string,
   prompt: string,
   aspectRatio: string,
   enableNsfw: boolean,
-  isScroll: boolean,
   timeoutMs: number = 30000
 ): Promise<ImageResult[]> {
-  const cookie = buildCookie(sso, sso_rw);
+  const cookie = buildCookie(sso, ssoRw);
   const headers = getWebSocketHeaders(cookie);
 
-  // Use fetch to establish WebSocket connection (Cloudflare Workers way)
   const response = await fetch(WS_URL.replace("wss://", "https://"), {
     headers: {
       ...headers,
@@ -135,14 +166,11 @@ async function connectAndReceive(
   }
 
   ws.accept();
-
-  // Send request immediately after accept (connection is already open)
-  const request = buildRequest(prompt, aspectRatio, enableNsfw, isScroll);
-  ws.send(JSON.stringify(request));
+  ws.send(JSON.stringify(buildWebSocketRequest(prompt, aspectRatio, enableNsfw)));
 
   return new Promise((resolve, reject) => {
     const results: ImageResult[] = [];
-    const receivedImages: Map<string, ImageResult> = new Map();
+    const receivedImages = new Map<string, ImageResult>();
     const completedJobs = new Set<string>();
     const failedJobs = new Set<string>();
 
@@ -153,76 +181,75 @@ async function connectAndReceive(
 
     ws.addEventListener("message", (event: MessageEvent) => {
       try {
-        const data: WsMessage = JSON.parse(event.data as string);
-        const msgType = data.type;
+        const data = JSON.parse(event.data as string) as WsMessage;
+        const msgType = data.type || "";
 
         if (msgType === "json") {
           const jobId = data.job_id || "";
           const status = data.current_status || "";
           const percentage = data.percentage_complete || 0;
 
-          if (status === "completed" && percentage >= 100) {
+          if (status === "completed" && percentage >= 100 && jobId) {
             completedJobs.add(jobId);
-          } else if (status === "error") {
+          } else if (status === "error" && jobId) {
             failedJobs.add(jobId);
           }
-        } else if (msgType === "image") {
-          const jobId = data.job_id || "";
-          const blob = data.blob || "";
-          const url = data.url || "";
-          const blobLen = blob.length;
-
-          if (jobId) {
-            const existing = receivedImages.get(jobId);
-            const existingBlobLen = existing?.blob?.length || 0;
-
-            // Check if this is a full image (blob > 100KB or URL ends with .jpg)
-            const isFullImage = blobLen > 100000 || url.endsWith(".jpg");
-
-            // Update to larger blob
-            if (!existing || blobLen > existingBlobLen) {
-              const result: ImageResult = {
-                job_id: jobId,
-                request_id: data.request_id || "",
-                url: url,
-                blob: blob,
-                prompt: data.prompt || "",
-                full_prompt: data.full_prompt || "",
-                width: data.width || 0,
-                height: data.height || 0,
-                model_name: data.model_name || "",
-                grid_index: data.grid_index || 0,
-                order: data.order || 0,
-                r_rated: data.r_rated || false,
-                moderated: data.moderated || false,
-              };
-              receivedImages.set(jobId, result);
-
-              // Only add to results when we receive full image
-              if (isFullImage && !result.moderated) {
-                results.push(result);
-              }
-            }
-          }
-        } else if (msgType === "error") {
-          const errorMsg = data.message || "Unknown error";
-          clearTimeout(timeout);
-          ws.close();
-          reject(new Error(errorMsg));
           return;
         }
 
-        // Check if batch is done (6 jobs completed or failed)
-        const totalDone = completedJobs.size + failedJobs.size;
-        if (totalDone >= 6) {
-          clearTimeout(timeout);
-          setTimeout(() => {
-            ws.close();
-            resolve(results);
-          }, 300);
+        if (msgType === "image") {
+          const jobId = data.job_id || extractImageIdFromUrl(data.url || "");
+          const blob = data.blob || "";
+          const url = data.url || "";
+          const blobLen = blob.length;
+          const existingBlobLen = receivedImages.get(jobId)?.blob.length || 0;
+          const isFinalImage = blobLen >= 100_000;
+
+          if (!url || !jobId) return;
+
+          if (!receivedImages.has(jobId) || blobLen > existingBlobLen) {
+            const result: ImageResult = {
+              job_id: jobId,
+              request_id: data.request_id || crypto.randomUUID(),
+              url,
+              blob,
+              prompt: data.prompt || prompt,
+              full_prompt: data.full_prompt || prompt,
+              width: data.width || 0,
+              height: data.height || 0,
+              model_name: data.model_name || IMAGE_MODEL_NAME,
+              grid_index: data.grid_index || 0,
+              order: data.order || 0,
+              r_rated: Boolean(data.r_rated),
+              moderated: Boolean(data.moderated),
+            };
+            receivedImages.set(jobId, result);
+
+            if (isFinalImage && !result.moderated) {
+              results.push(result);
+            }
+          }
+          return;
         }
+
+        if (msgType === "error") {
+          clearTimeout(timeout);
+          ws.close();
+          reject(new Error(extractErrorMessage(data)));
+          return;
+        }
+
       } catch {
         // Ignore parse errors
+      }
+
+      const totalDone = completedJobs.size + failedJobs.size;
+      if (totalDone >= 6) {
+        clearTimeout(timeout);
+        setTimeout(() => {
+          ws.close();
+          resolve(results);
+        }, 300);
       }
     });
 
@@ -242,9 +269,9 @@ async function connectAndReceive(
   });
 }
 
-export async function* generateImages(
+async function* generateImagesViaWebSocket(
   sso: string,
-  sso_rw: string,
+  ssoRw: string,
   prompt: string,
   count: number,
   aspectRatio: string,
@@ -265,16 +292,13 @@ export async function* generateImages(
   for (let page = 0; page < maxPages; page++) {
     if (collectedJobs.size >= count) break;
 
-    const isScroll = page > 0;
-
     try {
-      const images = await connectAndReceive(
+      const images = await connectAndReceiveViaWebSocket(
         sso,
-        sso_rw,
+        ssoRw,
         prompt,
         aspectRatio,
         enableNsfw,
-        isScroll,
         30000
       );
 
@@ -284,7 +308,6 @@ export async function* generateImages(
 
         collectedJobs.add(img.job_id);
 
-        // Determine image source
         let imageSrc = img.url;
         if (img.blob) {
           if (img.blob.startsWith("data:")) {
@@ -325,22 +348,206 @@ export async function* generateImages(
 
         if (collectedJobs.size >= count) break;
       }
-
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      if (message.includes("429") || message.includes("Rate limited")) {
-        yield { type: "error", message: "Rate limited (429)" };
-        return;
-      }
       yield { type: "error", message };
       return;
     }
 
-    // Small delay between pages
     if (page < maxPages - 1 && collectedJobs.size < count) {
-      await new Promise(resolve => setTimeout(resolve, 300));
+      await new Promise((resolve) => setTimeout(resolve, 300));
     }
   }
 
   yield { type: "done" };
+}
+
+async function* generateImagesViaAppChat(
+  sso: string,
+  ssoRw: string,
+  prompt: string,
+  count: number,
+  aspectRatio: string,
+  enableNsfw: boolean
+): AsyncGenerator<StreamUpdate> {
+  const cookie = buildCookie(sso, ssoRw);
+  const headers = getHeaders(cookie, "https://grok.com/");
+  const seenImages = new Set<string>();
+  let completedCount = 0;
+
+  yield {
+    type: "progress",
+    job_id: "",
+    status: "starting",
+    percentage: 0,
+    completed_count: 0,
+    target_count: count,
+  };
+
+  while (completedCount < count) {
+    const batchCount = Math.min(APP_CHAT_IMAGE_BATCH_SIZE, count - completedCount);
+    const payload = buildAppChatPayload({
+      message: prompt,
+      modelName: IMAGE_MODEL_NAME,
+      modelMode: IMAGE_MODEL_MODE,
+      enableImageGeneration: true,
+      imageGenerationCount: batchCount,
+      toolOverrides: { imageGen: true },
+      requestOverrides: {
+        imageGenerationCount: batchCount,
+        enableNsfw: enableNsfw,
+      },
+    });
+
+    const response = await fetch(CHAT_API, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => "");
+      throw new Error(`HTTP ${response.status}: ${errorText.slice(0, 500)}`);
+    }
+
+    if (!response.body) {
+      throw new Error("No response body");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let batchImages = 0;
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const rawLine of lines) {
+          const line = normalizeAppChatStreamLine(rawLine);
+          if (!line) continue;
+
+          let data: unknown;
+          try {
+            data = JSON.parse(line);
+          } catch {
+            continue;
+          }
+
+          const resp = (data as { result?: { response?: Record<string, unknown> } })?.result?.response;
+          if (!resp) continue;
+
+          const streaming = resp.streamingImageGenerationResponse;
+          if (streaming && typeof streaming === "object") {
+            const record = streaming as Record<string, unknown>;
+            const progress = Number(record.progress ?? 0);
+            const imageIndex = Number(record.imageIndex ?? 0);
+            yield {
+              type: "progress",
+              job_id: `app-chat-image-${completedCount}-${imageIndex}`,
+              status: "generating",
+              percentage: progress,
+              completed_count: completedCount,
+              target_count: count,
+            };
+          }
+
+          const modelResponse = resp.modelResponse;
+          if (!modelResponse || typeof modelResponse !== "object") continue;
+
+          const urls = collectGeneratedImageUrls(modelResponse);
+          for (const url of urls) {
+            if (!url) continue;
+            const imageId = extractImageIdFromUrl(url);
+            if (seenImages.has(imageId) || completedCount >= count) continue;
+
+            seenImages.add(imageId);
+            batchImages += 1;
+            completedCount += 1;
+
+            yield {
+              type: "image",
+              job_id: imageId,
+              request_id: String(resp.responseId || crypto.randomUUID()),
+              url,
+              image_src: url,
+              has_blob: false,
+              prompt,
+              full_prompt: prompt,
+              width: 0,
+              height: 0,
+              model_name: IMAGE_MODEL_NAME,
+              grid_index: batchImages - 1,
+              order: completedCount - 1,
+              r_rated: false,
+              moderated: false,
+            };
+
+            yield {
+              type: "progress",
+              job_id: imageId,
+              status: "collecting",
+              percentage: (completedCount / count) * 100,
+              completed_count: completedCount,
+              target_count: count,
+            };
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (batchImages === 0) {
+      throw new Error("No images generated");
+    }
+  }
+
+  yield { type: "done" };
+}
+
+export async function* generateImages(
+  sso: string,
+  ssoRw: string,
+  prompt: string,
+  count: number,
+  aspectRatio: string,
+  enableNsfw: boolean
+): AsyncGenerator<StreamUpdate> {
+  let emittedImages = false;
+
+  try {
+    for await (const update of generateImagesViaAppChat(
+      sso,
+      ssoRw,
+      prompt,
+      count,
+      aspectRatio,
+      enableNsfw
+    )) {
+      if (update.type === "image") {
+        emittedImages = true;
+      }
+      yield update;
+    }
+    return;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (emittedImages || isAuthOrRateLimit(message)) {
+      yield { type: "error", message };
+      return;
+    }
+
+    yield {
+      type: "info",
+      message: `App-chat image generation failed, fallback to websocket: ${message}`,
+    };
+  }
+
+  yield* generateImagesViaWebSocket(sso, ssoRw, prompt, count, aspectRatio, enableNsfw);
 }

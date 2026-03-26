@@ -55,24 +55,6 @@ function createErrorResponse(message: string, status: number): Response {
   });
 }
 
-/**
- * Extract post_id from image URL or create a new media post.
- * Grok image URLs typically have format: https://assets.grok.com/{post_id}.png
- */
-function extractPostIdFromUrl(imageUrl: string): string | null {
-  try {
-    const url = new URL(imageUrl);
-    // Try to extract from path: /abc123.png -> abc123
-    const match = url.pathname.match(/\/([a-zA-Z0-9_-]+)\.(png|jpg|jpeg|webp)$/i);
-    if (match && match[1]) {
-      return match[1];
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 // POST /v1/videos/generations
 app.post("/generations", async (c) => {
   const body = await c.req.json<VideoGenerationRequest>();
@@ -101,9 +83,6 @@ app.post("/generations", async (c) => {
 
   const db = c.env.DB;
 
-  // Try to extract post_id from URL
-  const postId = extractPostIdFromUrl(image_url);
-
   // Retry logic with token rotation
   const excludedTokenIds: string[] = [];
   let retryCount = 0;
@@ -127,9 +106,6 @@ app.post("/generations", async (c) => {
     }
 
     try {
-      // Use extracted postId or empty string (generateVideo will create one)
-      const actualPostId = postId || "";
-
       // Determine aspect ratio from resolution (default to square for video)
       const aspectRatio = "1:1";
 
@@ -141,7 +117,7 @@ app.post("/generations", async (c) => {
         token.id,
         image_url,
         prompt,
-        actualPostId,
+        "",
         aspectRatio,
         duration,
         resolution,
